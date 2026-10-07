@@ -1,5 +1,6 @@
 import os
 import datetime as dt
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 import pandas as pd
@@ -12,6 +13,7 @@ st.set_page_config(
 
 CSV_PATH = "papers.csv"
 LAST_UPDATED_PATH = "last_updated.txt"
+LOCAL_TZ = ZoneInfo("Australia/Brisbane")
 
 
 def get_last_updated_text():
@@ -25,14 +27,17 @@ def get_last_updated_text():
             raw = f.read().strip()
         try:
             parsed = dt.datetime.fromisoformat(raw)
-            return parsed.strftime("%B %d, %Y")
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=dt.timezone.utc)
+            # Timestamps are written in UTC; show the date in Brisbane time.
+            return parsed.astimezone(LOCAL_TZ).strftime("%B %d, %Y")
         except ValueError:
             if raw:
                 return raw
 
     if os.path.exists(CSV_PATH):
         mtime = os.path.getmtime(CSV_PATH)
-        return dt.datetime.fromtimestamp(mtime).strftime("%B %d, %Y")
+        return dt.datetime.fromtimestamp(mtime, tz=LOCAL_TZ).strftime("%B %d, %Y")
 
     return "unknown"
 
@@ -45,9 +50,12 @@ CATEGORY_INFO = {
 }
 
 
-@st.cache_data
+@st.cache_data(ttl=3600)
 def load_data():
     df = pd.read_csv(CSV_PATH)
+    if "Date added" in df.columns:
+        # Rows registered before the column existed are blank (NaT).
+        df["Date added"] = pd.to_datetime(df["Date added"], errors="coerce")
     return df
 
 
@@ -97,7 +105,13 @@ def main():
 
     st.markdown("---")
 
-    display_df = filtered.copy().sort_values("Index")
+    if "Date added" in filtered.columns:
+        # Newest additions first; older rows without a date follow, highest index first.
+        display_df = filtered.copy().sort_values(
+            ["Date added", "Index"], ascending=[False, False], na_position="last"
+        )
+    else:
+        display_df = filtered.copy().sort_values("Index")
 
     st.dataframe(
         display_df,
@@ -109,6 +123,7 @@ def main():
             "Technosignature Type": st.column_config.TextColumn("Type", width="medium"),
             "PDF Link": st.column_config.LinkColumn("PDF", display_text="Open PDF"),
             "Summary": st.column_config.TextColumn("Summary", width="large"),
+            "Date added": st.column_config.DateColumn("Date added", format="YYYY-MM-DD", width="small"),
         },
         height=700,
     )
